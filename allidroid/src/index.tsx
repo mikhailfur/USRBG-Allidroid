@@ -19,9 +19,12 @@ const API_URL = "https://usrbg.is-hardly.online/users";
 const GET_YOUR_BANNER_URL = "https://github.com/AutumnVN/usrbg#how-to-request-your-own-usrbg-banner";
 const REFRESH_MS = 6 * 60 * 60 * 1000;
 const RETRY_MS = 5 * 60 * 1000;
+const DISPLAY_PROFILE_PATH = "modules/user_profile/DisplayProfile.tsx";
+const AVATAR_UTILS_PATH = "utils/AvatarUtils.tsx";
+const DIRECT_BANNER_URL = "https://usrbg.is-hardly.online/usrbg/v2";
 
 const DEFAULT_SETTINGS = {
-    nitroFirst: true
+    nitroFirst: false
 };
 
 type SettingKey = keyof typeof DEFAULT_SETTINGS;
@@ -51,13 +54,17 @@ let data: UsrbgData | null = null;
 let lastLoadedAt = 0;
 let lastAttemptAt = 0;
 let loadPromise: Promise<boolean> | null = null;
+let directBanners: Record<string, string> = {};
+let directChecked = new Set<string>();
 
 let active = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let patchAttempts = 0;
 let helpersPatched = false;
 let profilePatched = false;
+let consumersPatched = false;
 let unpatches: (() => void)[] = [];
+const profileOverrides = new WeakMap<object, any>();
 let patchedTargets = new WeakMap<object, Set<string>>();
 let patchedFunctions = new WeakSet<Function>();
 
@@ -101,6 +108,7 @@ function getSetting(key: SettingKey): boolean {
 
 function setSetting(key: SettingKey, value: boolean) {
     plugin.storage[key] = value;
+    redrawProfiles();
 }
 
 function icon(name: string): number | undefined {
@@ -150,28 +158,75 @@ function parseData(raw: any): UsrbgData | null {
     };
 }
 
-function imageURL(source: UsrbgData, userId: string, etag: string): string {
+function bannerBaseURL(source: UsrbgData, userId: string): string {
     const path = [source.bucket, source.prefix]
         .filter(Boolean)
         .join("/")
         .replace(/\/+/g, "/")
         .replace(/^\/+|\/+$/g, "");
 
-    return `${source.endpoint}/${path ? `${path}/` : ""}${userId}?${encodeURIComponent(etag)}`;
+    return `${source.endpoint}/${path ? `${path}/` : ""}${userId}`;
+}
+
+function imageURL(source: UsrbgData, userId: string, etag: string): string {
+    return `${bannerBaseURL(source, userId)}?${encodeURIComponent(etag)}`;
+}
+
+function currentUserId(): string | null {
+    try {
+        const id = store("UserStore")?.getCurrentUser?.()?.id;
+        return id == null ? null : String(id);
+    } catch {
+        return null;
+    }
+}
+
+async function checkDirectBanner(userId: string) {
+    if (directChecked.has(userId)) return;
+
+    directChecked.add(userId);
+    const url = data ? bannerBaseURL(data, userId) : `${DIRECT_BANNER_URL}/${userId}`;
+
+    try {
+        const response = await fetch(url, { method: "HEAD" });
+        if (!response.ok) return;
+
+        directBanners[userId] = url;
+        logger.info(`[USRBG] Прямая ссылка на баннер ${userId} работает`);
+        redrawProfiles();
+        notifyStatus();
+    } catch (error) {
+        logger.warn(`[USRBG] Не удалось проверить прямой баннер ${userId}`, error);
+    }
 }
 
 function getImageURL(userId?: string | null): string | null {
-    if (!userId) return null;
+    if (!userId || !active) return null;
 
     if (!data) {
         if (Date.now() - lastAttemptAt > RETRY_MS) void loadData();
+
+        if (userId === currentUserId()) {
+            if (!directChecked.has(userId)) void checkDirectBanner(userId);
+            return directBanners[userId] ?? null;
+        }
+
         return null;
     }
 
     if (Date.now() - lastLoadedAt > REFRESH_MS) void loadData();
 
     const etag = data.users[userId];
-    return typeof etag === "string" && etag ? imageURL(data, userId, etag) : null;
+    if (typeof etag === "string" && etag) return imageURL(data, userId, etag);
+
+    // The public list can lag behind a newly approved banner. Check the
+    // canonical image URL for the current account before giving up.
+    if (userId === currentUserId()) {
+        if (!directChecked.has(userId)) void checkDirectBanner(userId);
+        return directBanners[userId] ?? null;
+    }
+
+    return null;
 }
 
 async function loadData(force = false): Promise<boolean> {
@@ -208,6 +263,7 @@ async function loadData(force = false): Promise<boolean> {
             loadState.updatedAt = lastLoadedAt;
             loadState.error = null;
 
+            logger.info(`[USRBG] Загружено ${loadState.count} баннеров`);
             redrawProfiles();
             return true;
         } catch (error: any) {
@@ -277,6 +333,53 @@ function patchAfter(name: string, parent: any, callback: (...args: any[]) => any
     }
 }
 
+function patchBefore(name: string, parent: any, callback: (...args: any[]) => any): boolean {
+    const original = parent?.[name];
+    if (typeof original !== "function" || patchedFunctions.has(original)) return false;
+
+    let keys = patchedTargets.get(parent);
+    if (!keys) patchedTargets.set(parent, keys = new Set());
+    if (keys.has(name)) return false;
+
+    try {
+        const unpatch = patcher.before(name, parent, callback);
+        if (typeof unpatch !== "function") return false;
+
+        keys.add(name);
+        patchedFunctions.add(original);
+        unpatches.push(unpatch);
+        return true;
+    } catch (error) {
+        logger.warn(`[USRBG] Не удалось запатчить ${name}`, error);
+        return false;
+    }
+}
+
+function moduleAtPath(path: string): any[] {
+    const modules = (metro as any).modules;
+    if (!modules) return [];
+
+    const found: any[] = [];
+
+    for (const id in modules) {
+        if (modules[id]?.__filePath !== path) continue;
+
+        let exports = modules[id]?.publicModule?.exports ?? modules[id]?.exports;
+
+        try {
+            if (!exports || (typeof exports === "object" && Reflect.ownKeys(exports).length === 0)) {
+                exports = (globalThis as any).__r?.(Number(id)) ?? exports;
+            }
+        } catch {
+            // The module is initialized by the next attempt.
+        }
+
+        if (exports) found.push(exports);
+    }
+
+    return found;
+}
+
 function modulesWith(prop: string): any[] {
     const found = new Set<any>();
     const related = prop === "getUserBannerURL"
@@ -289,6 +392,11 @@ function modulesWith(prop: string): any[] {
         if (requireRelated && !related.some(key => typeof mod[key] === "function")) return;
         found.add(mod);
     };
+
+    for (const exports of moduleAtPath(AVATAR_UTILS_PATH)) {
+        add(exports, false);
+        add(exports?.default, false);
+    }
 
     const modules = (metro as any).modules;
     if (modules) {
@@ -357,7 +465,25 @@ function asClass(value: any): any {
     return null;
 }
 
-function findDisplayProfileClass(): any {
+function classFromExports(value: any): any {
+    const hasBannerURL = (candidate: any) =>
+        typeof candidate === "function"
+        && typeof candidate.prototype?.getBannerURL === "function";
+
+    if (hasBannerURL(value)) return value;
+    if (hasBannerURL(value?.default)) return value.default;
+    if (hasBannerURL(value?.default?.default)) return value.default.default;
+    return null;
+}
+
+function findDisplayProfileClasses(): any[] {
+    const found = new Set<any>();
+
+    for (const exports of moduleAtPath(DISPLAY_PROFILE_PATH)) {
+        const profile = classFromExports(exports);
+        if (profile) found.add(profile);
+    }
+
     const modules = (metro as any).modules;
 
     if (modules) {
@@ -365,8 +491,8 @@ function findDisplayProfileClass(): any {
             const exports = modules[id]?.publicModule?.exports ?? modules[id]?.exports;
 
             try {
-                const found = asClass(exports) ?? asClass(exports?.default) ?? asClass(exports?.DisplayProfile);
-                if (found) return found;
+                const profile = asClass(exports) ?? asClass(exports?.default) ?? asClass(exports?.DisplayProfile);
+                if (profile) found.add(profile);
             } catch (error) {
                 logger.warn(`[USRBG] Не удалось прочитать модуль ${id}`, error);
             }
@@ -377,31 +503,112 @@ function findDisplayProfileClass(): any {
         safeFindByName("DisplayProfile", false),
         safeFindByName("DisplayProfile", true)
     ]) {
-        const found = asClass(value);
-        if (found) return found;
+        const profile = asClass(value);
+        if (profile) found.add(profile);
     }
 
     try {
-        return asClass(metro.find((mod: any) =>
+        const profile = asClass(metro.find((mod: any) =>
             isDisplayProfileClass(mod) || isDisplayProfileClass(mod?.default)
         ));
+        if (profile) found.add(profile);
     } catch (error) {
         logger.warn("[USRBG] Не удалось найти DisplayProfile через metro.find", error);
     }
 
-    return null;
+    return [...found];
 }
 
 function patchDisplayProfile(): boolean {
-    const DisplayProfile = findDisplayProfileClass();
-    if (!DisplayProfile) return false;
+    let patched = false;
 
-    return patchAfter("getBannerURL", DisplayProfile.prototype, function (this: any, _args: any[], result: any) {
-        const url = getImageURL(this?.userId);
-        if (!url) return result;
-        if (getSetting("nitroFirst") && hasBanner(this)) return result;
-        return url;
-    });
+    for (const DisplayProfile of findDisplayProfileClasses()) {
+        patched = patchAfter("getBannerURL", DisplayProfile.prototype, function (this: any, _args: any[], result: any) {
+            const url = getImageURL(this?.userId);
+            if (!url) return result;
+            if (getSetting("nitroFirst") && hasBanner(this)) return result;
+            return url;
+        }) || patched;
+    }
+
+    return patched;
+}
+
+function withBannerOverride(profile: any): any {
+    if (!profile || typeof profile !== "object" || !profile.userId) return profile;
+
+    const cached = profileOverrides.get(profile);
+    if (cached) return cached;
+
+    const url = getImageURL(String(profile.userId));
+    if (!url || (getSetting("nitroFirst") && hasBanner(profile))) return profile;
+
+    try {
+        const original = typeof profile.getBannerURL === "function" ? profile.getBannerURL.bind(profile) : null;
+        const clone = Object.create(Object.getPrototypeOf(profile));
+        Object.defineProperties(clone, Object.getOwnPropertyDescriptors(profile));
+
+        Object.defineProperty(clone, "getBannerURL", {
+            configurable: true,
+            value: function (options: any) {
+                const url = getImageURL(String(profile.userId));
+                if (!url) return original?.(options);
+                if (getSetting("nitroFirst") && hasBanner(profile)) return original?.(options);
+                return url;
+            }
+        });
+
+        profileOverrides.set(profile, clone);
+        return clone;
+    } catch (error) {
+        logger.warn("[USRBG] Не удалось подменить DisplayProfile", error);
+        return profile;
+    }
+}
+
+function patchProfileConsumers(): boolean {
+    let patched = false;
+
+    const hookModule = moduleAtPath("modules/user_profile/hooks/useDisplayProfile.tsx")[0]
+        ?? safeFindByName("useDisplayProfile", false)
+        ?? safeFindByName("useDisplayProfile", true);
+
+    if (hookModule) {
+        for (const key of ["default", "getDisplayProfile", "useDisplayProfileWithFetchEffect"]) {
+            if (typeof hookModule[key] === "function") {
+                patched = patchAfter(key, hookModule, (_args: any[], result: any) => withBannerOverride(result)) || patched;
+            }
+        }
+    }
+
+    const bannerModule = moduleAtPath("modules/user_profile/native/UserProfileBanner.tsx")[0]
+        ?? safeFindByName("UserProfileBanner", false)
+        ?? safeFindByName("UserProfileBanner", true);
+
+    const decorateProps = ([props]: any[]) => {
+        if (!props?.displayProfile) return;
+
+        const decorated = withBannerOverride(props.displayProfile);
+        if (decorated === props.displayProfile) return;
+
+        return [{ ...props, displayProfile: decorated }];
+    };
+
+    if (bannerModule) {
+        const component = bannerModule.default;
+
+        if (typeof component === "function") {
+            patched = patchBefore("default", bannerModule, decorateProps) || patched;
+        } else if (typeof component?.type === "function") {
+            patched = patchBefore("type", component, decorateProps) || patched;
+        } else if (typeof component?.type?.render === "function") {
+            patched = patchBefore("render", component.type, decorateProps) || patched;
+        } else if (typeof component?.render === "function") {
+            patched = patchBefore("render", component, decorateProps) || patched;
+        }
+    }
+
+    return patched;
 }
 
 function tryPatch() {
@@ -409,8 +616,13 @@ function tryPatch() {
 
     if (!helpersPatched) helpersPatched = patchBannerHelpers();
     if (!profilePatched) profilePatched = patchDisplayProfile();
+    if (!consumersPatched) consumersPatched = patchProfileConsumers();
 
-    if (helpersPatched && profilePatched) return;
+    if (helpersPatched && profilePatched) {
+        if (!consumersPatched) consumersPatched = patchProfileConsumers();
+        logger.info("[USRBG] Патчи баннеров активны");
+        return;
+    }
 
     if (++patchAttempts >= 30) {
         logger.warn("[USRBG] Не все функции баннеров Discord найдены, плагин продолжит работать без них");
@@ -425,11 +637,15 @@ function onLoad() {
     patchAttempts = 0;
     helpersPatched = false;
     profilePatched = false;
+    consumersPatched = false;
     unpatches = [];
     patchedTargets = new WeakMap();
     patchedFunctions = new WeakSet();
 
     tryPatch();
+
+    const ownId = currentUserId();
+    if (ownId) void checkDirectBanner(ownId);
     void loadData(!data);
 }
 
@@ -452,6 +668,7 @@ function onUnload() {
     unpatches = [];
     helpersPatched = false;
     profilePatched = false;
+    consumersPatched = false;
     loadPromise = null;
 }
 
@@ -515,6 +732,82 @@ function RefreshRow() {
     );
 }
 
+function hasNitroBanner(userId: string): boolean {
+    try {
+        return Boolean(store("UserProfileStore")?.getUserProfile?.(userId)?.banner);
+    } catch {
+        return false;
+    }
+}
+
+function CheckBannerRow() {
+    const status = useStatus();
+    const id = currentUserId();
+    const url = id ? getImageURL(id) : null;
+    const nitro = id ? hasNitroBanner(id) : false;
+
+    const trailing = !id
+        ? "Нет ID"
+        : status.loading && !status.count
+            ? "Загрузка…"
+            : url
+                ? "Найден"
+                : status.count
+                    ? "Нет в базе"
+                    : "Нет данных";
+
+    return (
+        <TableRow
+            label="Проверить мой баннер"
+            subLabel={id ? `ID: ${id} · Nitro: ${nitro ? "да" : "нет"}` : "Не удалось получить ID"}
+            trailing={TableRow.TrailingText ? <TableRow.TrailingText text={trailing} /> : trailing}
+            onPress={() => {
+                const current = currentUserId();
+                if (!current) {
+                    toast("USRBG: не удалось получить ваш ID", icon("WarningIcon"));
+                    return;
+                }
+
+                const banner = getImageURL(current);
+                if (!banner) {
+                    toast(
+                        loadState.count
+                            ? `USRBG: ID ${current} нет в базе`
+                            : loadState.loading
+                                ? "USRBG: список ещё загружается"
+                                : "USRBG: список не загружен",
+                        icon("WarningIcon")
+                    );
+                    logger.info(`[USRBG] ${current} отсутствует в списке баннеров`);
+                    return;
+                }
+
+                if (getSetting("nitroFirst") && hasNitroBanner(current)) {
+                    toast("USRBG найден. Выключи «Сначала баннер Nitro».", icon("WarningIcon"));
+                } else {
+                    toast("USRBG: баннер найден, открываю", icon("CheckmarkSmallIcon"));
+                }
+
+                openURL(banner);
+            }}
+        />
+    );
+}
+
+function StatusRow() {
+    const status = useStatus();
+    const patches = `${profilePatched ? "профиль" : "профиль нет"} · ${helpersPatched ? "баннеры" : "баннеры нет"} · ${consumersPatched ? "хуки" : "хуки нет"}`;
+
+    return (
+        <TableRow
+            label="Состояние"
+            subLabel={status.error ?? "Патчи и загруженная база"}
+            disabled
+            trailing={TableRow.TrailingText ? <TableRow.TrailingText text={patches} /> : patches}
+        />
+    );
+}
+
 function Settings() {
     if (!TableRowGroup || !TableSwitchRow || !TableRow) {
         return (
@@ -542,6 +835,10 @@ function Settings() {
                     arrow
                     onPress={() => openURL(GET_YOUR_BANNER_URL)}
                 />
+            </TableRowGroup>
+            <TableRowGroup title="Диагностика">
+                <CheckBannerRow />
+                <StatusRow />
             </TableRowGroup>
         </RN.ScrollView>
     );

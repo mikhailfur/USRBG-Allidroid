@@ -13,7 +13,7 @@
 Ссылка для Allidroid:
 
 ```
-https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.0/allidroid/
+https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.1/allidroid/
 ```
 
 В приложении: **Plugins → Add a user plugin** → вставить ссылку → включить **USRBG**.
