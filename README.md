@@ -10,13 +10,20 @@
 
 ## Установка
 
-Ссылка для Allidroid:
+Рекомендуемая ссылка с автообновлением из ветки `main`:
 
 ```
-https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.1/allidroid/
+https://raw.githubusercontent.com/mikhailfur/USRBG-Allidroid/main/allidroid/
 ```
 
 В приложении: **Plugins → Add a user plugin** → вставить ссылку → включить **USRBG**.
+
+Allidroid сам добавляет к этой ссылке `manifest.json` и `index.js`, поэтому raw-ссылка на папку работает. При следующем запуске приложения плагин проверит `manifest.json`, сравнит `hash` и скачает новый `index.js`, если он изменился. Raw GitHub кэширует файлы примерно на 5 минут, так что свежий коммит подхватится без пересборки Allidroid.
+
+Другие варианты:
+
+- **CDN с автообновлением:** `https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@main/allidroid/` — jsDelivr может отдавать кэш дольше, чем raw GitHub.
+- **Стабильная версия без автообновления:** `https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.1/allidroid/`.
 
 Подробности, настройки и ограничения — в [README плагина](allidroid/README.md).
 

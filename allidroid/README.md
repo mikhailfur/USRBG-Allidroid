@@ -7,13 +7,31 @@
 ## Установка
 
 1. В Allidroid открой **Plugins → Add a user plugin**.
-2. Вставь ссылку:
+2. Вставь ссылку с автообновлением:
    ```
-   https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.1/allidroid/
+   https://raw.githubusercontent.com/mikhailfur/USRBG-Allidroid/main/allidroid/
    ```
 3. Включи **USRBG** в списке плагинов.
 
-Ссылка должна указывать на папку, где лежат `manifest.json` и `index.js`. `raw.githubusercontent.com` для папки не подходит: он отдаёт только отдельные файлы, поэтому URL папки без `manifest.json` вернёт 404.
+Ссылка указывает на папку, где лежат `manifest.json` и `index.js`. Allidroid сам добавляет к базовой ссылке эти файлы, поэтому raw-ссылка на папку работает, хотя `raw.githubusercontent.com` не отдаёт листинг директории.
+
+### Автообновление
+
+При каждом запуске Allidroid включённый плагин заново запрашивает `manifest.json`. Если `hash` изменился, клиент скачивает новый `index.js` с той же ссылки. Raw GitHub кэширует файлы примерно на 5 минут, так что после нового коммита нужно немного подождать и перезапустить Discord. Вручную обновить можно кнопкой **Refetch** на карточке плагина.
+
+Стабильная ссылка без автообновления:
+
+```
+https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.1/allidroid/
+```
+
+CDN-вариант с автообновлением:
+
+```
+https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@main/allidroid/
+```
+
+jsDelivr может держать кэш дольше raw GitHub.
 
 При первом запуске Allidroid может предупредить, что плагин не из официального списка. Это нормально: user plugin просто выполняет код внутри приложения.
 
