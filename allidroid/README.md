@@ -9,7 +9,7 @@
 1. В Allidroid открой **Plugins → Add a user plugin**.
 2. Вставь ссылку:
    ```
-   https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@main/allidroid/
+   https://cdn.jsdelivr.net/gh/mikhailfur/USRBG-Allidroid@v1.0.0/allidroid/
    ```
 3. Включи **USRBG** в списке плагинов.
 
