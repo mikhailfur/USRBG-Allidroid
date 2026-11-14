@@ -1,0 +1,26 @@
+{
+  "name": "USRBG",
+  "description": "Показывает баннеры из USRBG у пользователей без Nitro.",
+  "authors": [
+    {
+      "name": "mikhailfur"
+    },
+    {
+      "name": "AutumnVN"
+    },
+    {
+      "name": "katlyn"
+    },
+    {
+      "name": "pylix"
+    },
+    {
+      "name": "TheKodeToad"
+    }
+  ],
+  "main": "index.js",
+  "hash": "8770e27c0ea7fc3a78c4d9253d7dbbc40958d9deef020830dd3b52af94ad9c59",
+  "vendetta": {
+    "icon": "ImageIcon"
+  }
+}

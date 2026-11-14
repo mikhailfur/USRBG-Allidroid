@@ -1,0 +1,12 @@
+{
+    "name": "usrbg-allidroid",
+    "private": true,
+    "type": "module",
+    "description": "Allidroid user plugin: show USRBG banners on Discord profiles.",
+    "scripts": {
+        "build": "node build.mjs"
+    },
+    "devDependencies": {
+        "esbuild": "^0.25.0"
+    }
+}
