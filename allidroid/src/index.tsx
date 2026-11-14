@@ -340,10 +340,20 @@ function patchBannerHelpers(): boolean {
     return patched;
 }
 
+function isDisplayProfileClass(value: any): boolean {
+    return typeof value === "function"
+        && typeof value.prototype?.getBannerURL === "function"
+        && (
+            typeof value.prototype?.getPreviewBanner === "function"
+            || typeof value.prototype?.isUsingGuildMemberBanner === "function"
+            || typeof value.prototype?.getPreviewBio === "function"
+        );
+}
+
 function asClass(value: any): any {
-    if (typeof value === "function" && typeof value.prototype?.getBannerURL === "function") return value;
-    if (typeof value?.default === "function" && typeof value.default.prototype?.getBannerURL === "function") return value.default;
-    if (typeof value?.default?.default === "function" && typeof value.default.default.prototype?.getBannerURL === "function") return value.default.default;
+    if (isDisplayProfileClass(value)) return value;
+    if (isDisplayProfileClass(value?.default)) return value.default;
+    if (isDisplayProfileClass(value?.default?.default)) return value.default.default;
     return null;
 }
 
@@ -373,8 +383,7 @@ function findDisplayProfileClass(): any {
 
     try {
         return asClass(metro.find((mod: any) =>
-            typeof mod?.prototype?.getBannerURL === "function"
-            && typeof mod?.prototype?.getPreviewBanner === "function"
+            isDisplayProfileClass(mod) || isDisplayProfileClass(mod?.default)
         ));
     } catch (error) {
         logger.warn("[USRBG] Не удалось найти DisplayProfile через metro.find", error);
